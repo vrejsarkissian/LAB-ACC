@@ -102,6 +102,11 @@ tfoot td:first-child { text-align:left; }
 .scard .basis { font-size:10px; color:var(--ink-soft); margin-top:5px; font-style:italic; letter-spacing:0; text-transform:none; line-height:1.25; }
 .warn-banner { margin-top:14px; font-size:12.5px; background:#F6E7D8; border:1px solid var(--warn); border-left:4px solid var(--warn); border-radius:3px; padding:11px 14px; color:#6e3d11; display:none; line-height:1.5; }
 .warn-banner.show { display:block; }
+.gate-banner { font-size:13px; background:var(--bronze-pale); border-left:4px solid var(--bronze); border-radius:3px; padding:11px 14px; color:var(--ink); margin-bottom:14px; line-height:1.5; }
+.gate-banner strong { color:var(--ink); font-weight:600; }
+.panel.gated .waiter-grid input,
+.panel.gated .waiter-grid button,
+.panel.gated .btn-row button { opacity:0.45; pointer-events:none; }
 /* Settings (collapsible) */
 .settings-toggle { font-family:var(--sans); font-size:12px; font-weight:600; color:var(--bronze); cursor:pointer; background:none; border:none; display:flex; align-items:center; gap:6px; padding:0; }
 .settings-toggle:hover { color:#755d3a; }
@@ -182,12 +187,12 @@ tfoot td:first-child { text-align:left; }
     <div class="event-details">
       <div class="ed-field">
         <label class="ed-label">Event Date</label>
-        <input type="date" id="eventDate" onchange="render()">
+        <input type="date" id="eventDate" onchange="onEventDateChange()">
       </div>
       <div class="ed-field">
         <label class="ed-label">Venue</label>
         <div class="combo">
-          <input type="text" id="venue" value="Glenoaks Ballroom" readonly onclick="toggleCombo('venueMenu')" autocomplete="off">
+          <input type="text" id="venue" value="" placeholder="Select venue…" readonly onclick="toggleCombo('venueMenu')" autocomplete="off">
           <button type="button" class="combo-btn" onclick="event.stopPropagation();toggleCombo('venueMenu')" aria-label="Show options"></button>
           <div class="combo-menu" id="venueMenu">
             <div class="combo-opt" onclick="pickVenue('The Landmark')">The Landmark</div>
@@ -225,9 +230,10 @@ tfoot td:first-child { text-align:left; }
   </div>
 
   <!-- ENTRY -->
-  <div class="panel no-print">
+  <div class="panel no-print" id="tipsCollectedPanel">
     <h2><span class="n">i.</span> Tips Collected</h2>
     <div class="hint">Enter what each waiter personally collected from guests at this event.</div>
+    <div class="gate-banner" id="eventGateBanner" style="display:none;"></div>
     <div class="waiter-grid" id="waiterList"></div>
     <div class="btn-row">
       <button class="btn primary" onclick="addWaiter()">+ Add waiter</button>
@@ -360,7 +366,17 @@ const SAMPLE_ROSTER = [
   {name:'Kristina',tips:130}, {name:'Irina',   tips:70},  {name:'Nareg',   tips:70},
   {name:'Katia',   tips:50},  {name:'Johnny',  tips:50}
 ];
-let waiters = SAMPLE_ROSTER.map(w => ({...w}));
+
+// Default number of blank waiter rows loaded when a venue is selected.
+// These reflect typical service-staff counts per venue and can be edited freely once loaded.
+const VENUE_WAITER_COUNTS = {
+  'Glenoaks Ballroom': 6,
+  'The Landmark': 18,
+  'Offsite Catering': 8
+};
+
+// Start with no waiters — they'll populate when a venue is selected.
+let waiters = [];
 
 // ---- Per-venue rule sets ----
 // Glenoaks is set from the spreadsheet. Landmark & Offsite start as copies — edit to each venue's real rules.
@@ -371,7 +387,7 @@ const DEFAULT_RULES = {
 };
 const STORE_KEY = 'labanquets_tip_rules_v4';
 let venueRules = JSON.parse(JSON.stringify(DEFAULT_RULES));
-let currentVenue = 'Glenoaks Ballroom';
+let currentVenue = '';
 
 function loadStore(){
   try {
@@ -387,6 +403,16 @@ function persistStore(){
   try { localStorage.setItem(STORE_KEY, JSON.stringify(venueRules)); } catch(e){}
 }
 function loadVenueRules(v){
+  if(!v){
+    // No venue selected — clear rule fields and label
+    ['b1','b2','b3','b4','r1','r2','r3','r4','r5','kitchenPct','managerPct'].forEach(id=>{
+      const el = document.getElementById(id); if(el) el.value = '';
+    });
+    document.getElementById('settingsVenueName').textContent = '(select a venue)';
+    const kh = document.getElementById('kitchenCalcHint'); if(kh) kh.textContent = '';
+    const mh = document.getElementById('managerCalcHint'); if(mh) mh.textContent = '';
+    return;
+  }
   const r = venueRules[v] || DEFAULT_RULES[v];
   document.getElementById('b1').value = r.bounds[0];
   document.getElementById('b2').value = r.bounds[1];
@@ -402,6 +428,7 @@ function loadVenueRules(v){
   document.getElementById('settingsVenueName').textContent = v;
 }
 function saveCurrentRules(){
+  if(!currentVenue) return;  // no venue → nothing to save
   venueRules[currentVenue] = {
     bounds: [ +document.getElementById('b1').value, +document.getElementById('b2').value, +document.getElementById('b3').value, +document.getElementById('b4').value ],
     rates: [ +document.getElementById('r1').value, +document.getElementById('r2').value, +document.getElementById('r3').value, +document.getElementById('r4').value, +document.getElementById('r5').value ],
@@ -411,11 +438,78 @@ function saveCurrentRules(){
   persistStore();
 }
 function onVenueChange(){
-  currentVenue = document.getElementById('venue').value;
+  const newVenue = document.getElementById('venue').value;
+  const previousVenue = currentVenue;
+  const changed = newVenue !== previousVenue;
+  // If switching to a different venue and the operator has already entered real data,
+  // confirm before wiping the current roster.
+  if(changed && newVenue && hasWaiterData()){
+    const cnt = VENUE_WAITER_COUNTS[newVenue] || 0;
+    if(!confirm('Switching to ' + newVenue + ' will replace the current waiter list with ' + cnt + ' blank rows. Continue?')){
+      // Revert the venue field — the user backed out
+      document.getElementById('venue').value = previousVenue;
+      return;
+    }
+  }
+  currentVenue = newVenue;
   loadVenueRules(currentVenue);
+  clearSubmitStatus();
+  if(changed && newVenue){
+    loadDefaultRosterForVenue(newVenue);  // calls render() itself
+  } else {
+    render();
+  }
+}
+function loadDefaultRosterForVenue(venue){
+  const count = VENUE_WAITER_COUNTS[venue] || 0;
+  waiters = Array.from({length: count}, () => ({name:'', tips:''}));
+  applySort();
+  renderWaiterInputs();
   render();
 }
+function hasWaiterData(){
+  return waiters.some(w => (w.name && String(w.name).trim()) || (Number(w.tips) > 0));
+}
+function onEventDateChange(){
+  clearSubmitStatus();
+  render();
+}
+function clearSubmitStatus(){
+  const st = document.getElementById('submitStatus');
+  if(st){ st.className = 'submit-status'; st.textContent = ''; }
+}
+function eventDetailsComplete(){
+  return !!(
+    (document.getElementById('eventDate').value||'').trim() &&
+    (document.getElementById('venue').value||'').trim() &&
+    (document.getElementById('eventType').value||'').trim() &&
+    (document.getElementById('ethnicity').value||'').trim()
+  );
+}
+function getMissingEventDetails(){
+  const missing = [];
+  if(!(document.getElementById('eventDate').value||'').trim()) missing.push('Event Date');
+  if(!(document.getElementById('venue').value||'').trim()) missing.push('Venue');
+  if(!(document.getElementById('eventType').value||'').trim()) missing.push('Event Type');
+  if(!(document.getElementById('ethnicity').value||'').trim()) missing.push('Ethnicity');
+  return missing;
+}
+function updateEventGating(){
+  const panel = document.getElementById('tipsCollectedPanel');
+  const banner = document.getElementById('eventGateBanner');
+  if(!panel || !banner) return;
+  if(eventDetailsComplete()){
+    panel.classList.remove('gated');
+    banner.style.display = 'none';
+  } else {
+    panel.classList.add('gated');
+    const missing = getMissingEventDetails();
+    banner.innerHTML = 'Fill in <strong>' + missing.join(', ') + '</strong> above before entering waiter names and tips.';
+    banner.style.display = 'block';
+  }
+}
 function resetVenueRules(){
+  if(!currentVenue) return;
   venueRules[currentVenue] = JSON.parse(JSON.stringify(DEFAULT_RULES[currentVenue]));
   loadVenueRules(currentVenue);
   persistStore();
@@ -683,6 +777,7 @@ function submitToSheet(){
 }
 
 function render(){
+  updateEventGating();
   saveCurrentRules();
   const sch = getSchedule();
   const kitchenPct = +document.getElementById('kitchenPct').value/100;
@@ -700,11 +795,16 @@ function render(){
     const d = new Date(dateVal + 'T00:00:00');
     dateStr = d.toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'});
   }
-  const stampParts = [venue];
+  const stampParts = [];
+  if(venue) stampParts.push(venue);
   if(dateStr) stampParts.push(dateStr);
   if(eventType) stampParts.push(eventType);
   if(ethnicity) stampParts.push(ethnicity);
-  document.getElementById('eventStamp').innerHTML = stampParts.join('<span class="dot">·</span>');
+  if(!venue){
+    document.getElementById('eventStamp').innerHTML = '<span style="font-style:italic;color:var(--ink-soft)">Select a venue to begin</span>';
+  } else {
+    document.getElementById('eventStamp').innerHTML = stampParts.join('<span class="dot">·</span>');
+  }
 
   const T = w => Number(w.tips) || 0;
   const total = waiters.reduce((a,w)=>a+T(w),0);
@@ -891,7 +991,7 @@ function render(){
 }
 
 renderWaiterInputs();
-(function(){ const t=new Date(); document.getElementById('eventDate').value = t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0'); })();
+// Event date stays blank by default — the manager picks it explicitly.
 loadStore();
 loadSubmitUrl();
 applySort();
