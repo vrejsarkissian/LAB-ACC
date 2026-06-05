@@ -81,8 +81,8 @@ body { background:var(--bg); font-family:var(--sans); color:var(--ink); -webkit-
 .btn-row { display:flex; gap:8px; margin-top:14px; }
 .btn { font-family:var(--sans); font-size:12px; font-weight:600; cursor:pointer; border-radius:3px; padding:8px 13px; border:1px solid var(--bronze); background:var(--white); color:var(--ink); transition:all .15s; letter-spacing:0.3px; }
 .btn:hover { background:var(--bronze-pale); border-color:var(--bronze); }
-.btn.primary { background:var(--orange); color:var(--white); border-color:var(--orange); }
-.btn.primary:hover { background:#c00000; border-color:#c00000; }
+.btn.primary { background:var(--ink); color:var(--white); border-color:var(--ink); }
+.btn.primary:hover { background:#5e0d07; border-color:#5e0d07; }
 /* Results */
 .results { background:var(--white); }
 table { width:100%; border-collapse:collapse; font-size:13px; }
@@ -109,6 +109,21 @@ tbody tr.low .rate-badge { background:var(--white); }
 .rate-badge.opener { background:var(--ink); color:#fff; }
 .rate-badge.equal { background:var(--bronze); color:#fff; }
 .set-group.dimmed { opacity:0.45; pointer-events:none; }
+/* Quick equal-mode toggle in Section 2 (description sits above the button; full explanation lives in Rules & Settings) */
+.notes-row { display:flex; gap:18px; align-items:flex-start; margin-top:20px; }
+.notes-row .notes-field { flex:1 1 auto; min-width:0; margin-top:0; }
+.equal-toggle-group { flex:0 0 200px; display:flex; flex-direction:column; gap:7px; margin-top:24px; }
+.equal-desc { font-size:11px; color:var(--ink-soft); font-style:italic; line-height:1.4; }
+.equal-btn { padding:8px 12px; font-size:12px; letter-spacing:0.3px; align-self:flex-start; }
+.equal-btn.is-on { background:var(--ink); color:#fff; border-color:var(--ink); }
+.equal-btn.is-on:hover { background:#5e0d07; border-color:#5e0d07; }
+.equal-btn.is-on::before { content:"✓ "; }
+@media (max-width:620px){
+  .notes-row { flex-direction:column; gap:14px; margin-top:18px; }
+  .equal-toggle-group { flex:0 0 auto; margin-top:0; gap:6px; }
+  .equal-desc { font-size:12px; }
+  .equal-btn { padding:11px 16px; font-size:14px; }
+}
 tr.opener-row td { background:rgba(122,76,42,0.06); font-style:italic; }
 tr.opener-row .payout { font-style:normal; }
 .payout { font-family:var(--serif); font-size:18px; font-weight:600; color:var(--ink); }
@@ -364,9 +379,15 @@ tfoot td:first-child { text-align:left; }
 
     <div class="summary" id="summary"></div>
 
-    <div class="notes-field">
-      <label class="ed-label" for="eventNotes">Notes</label>
-      <textarea id="eventNotes" rows="3" placeholder="Add any notes about this event's tip distribution…"></textarea>
+    <div class="notes-row">
+      <div class="equal-toggle-group">
+        <div class="equal-desc">Splits all tips evenly after kitchen, manager, and opener cuts.</div>
+        <button type="button" id="equalModeBtn" class="btn equal-btn" onclick="onEqualModeQuickChange()" title="See Rules & Settings below for the full description.">Distribute Equally</button>
+      </div>
+      <div class="notes-field">
+        <label class="ed-label" for="eventNotes">Notes</label>
+        <textarea id="eventNotes" rows="3" placeholder="Add any notes about this event's tip distribution…"></textarea>
+      </div>
     </div>
 
     <div class="print-row no-print">
@@ -511,7 +532,11 @@ function persistStore(){
 }
 function loadVenueRules(v){
   const equalCb = document.getElementById('equalMode');
+  const equalBtn = document.getElementById('equalModeBtn');
   const bracket = document.getElementById('bracketSettings');
+  function syncBtnFromMain(isOn){
+    if(equalBtn) equalBtn.classList.toggle('is-on', isOn);
+  }
   if(!v){
     // No venue selected — clear rule fields and label
     ['b1','b2','b3','b4','r1','r2','r3','r4','r5','kitchenPct','managerPct'].forEach(id=>{
@@ -521,6 +546,7 @@ function loadVenueRules(v){
     const kh = document.getElementById('kitchenCalcHint'); if(kh) kh.textContent = '';
     const mh = document.getElementById('managerCalcHint'); if(mh) mh.textContent = '';
     if(equalCb) equalCb.checked = false;
+    syncBtnFromMain(false);
     if(bracket) bracket.classList.remove('dimmed');
     return;
   }
@@ -538,6 +564,7 @@ function loadVenueRules(v){
   document.getElementById('managerPct').value = (r.managerPct==null ? 0 : r.managerPct);
   document.getElementById('settingsVenueName').textContent = v;
   if(equalCb){ equalCb.checked = !!r.equalMode; }
+  syncBtnFromMain(!!r.equalMode);
   if(bracket){ bracket.classList.toggle('dimmed', !!r.equalMode); }
 }
 function saveCurrentRules(){
@@ -594,14 +621,24 @@ function clearSubmitStatus(){
 }
 function onEqualModeChange(){
   const cb = document.getElementById('equalMode');
+  const btn = document.getElementById('equalModeBtn');
   const bracket = document.getElementById('bracketSettings');
-  if(bracket) bracket.classList.toggle('dimmed', !!(cb && cb.checked));
+  const isOn = !!(cb && cb.checked);
+  if(bracket) bracket.classList.toggle('dimmed', isOn);
+  if(btn) btn.classList.toggle('is-on', isOn);
   // Clearing per-row overrides — they don't apply in equal mode and become confusing
-  if(cb && cb.checked){
+  if(isOn){
     waiters.forEach(w => { w.override = null; });
   }
   clearSubmitStatus();
+  saveCurrentRules();   // persist the new mode against the current venue
   render();
+}
+function onEqualModeQuickChange(){
+  // Section 2 button — flip the canonical checkbox in Settings, then re-sync everything.
+  const main = document.getElementById('equalMode');
+  if(main) main.checked = !main.checked;
+  onEqualModeChange();
 }
 function eventDetailsComplete(){
   return !!(
