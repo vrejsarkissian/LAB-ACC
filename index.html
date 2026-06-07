@@ -102,6 +102,14 @@ tbody tr.low .rate-badge { background:var(--white); }
 .contrib-inp { width:60px; border:1px solid transparent; border-radius:3px; padding:3px 5px; font-family:var(--sans); font-size:12px; text-align:right; color:var(--neg); background:transparent; }
 .contrib-inp:hover { border-color:var(--rule); background:var(--white); }
 .contrib-inp:focus { outline:none; border-color:var(--bronze); background:var(--white); color:var(--ink); }
+/* Take-home is overrideable too — same inline-edit pattern, payout font + size, kitchen absorbs the delta */
+.payout-wrap { display:inline-flex; align-items:center; gap:3px; justify-content:flex-end; }
+.payout-prefix { color:var(--ink); font-family:var(--serif); font-size:18px; font-weight:600; }
+.payout-inp { width:78px; border:1px solid transparent; border-radius:3px; padding:3px 5px; font-family:var(--serif); font-weight:600; font-size:18px; text-align:right; color:var(--ink); background:transparent; }
+.payout-inp:hover { border-color:var(--rule); background:var(--white); }
+.payout-inp:focus { outline:none; border-color:var(--bronze); background:var(--white); }
+.payout-inp.is-override { color:var(--orange); }
+.scard .delta { font-size:10px; color:var(--orange); margin-top:3px; font-style:italic; letter-spacing:0; text-transform:none; line-height:1.25; font-weight:600; }
 .auto-btn { background:none; border:none; color:var(--bronze-soft); cursor:pointer; font-size:13px; padding:0 1px; line-height:1; }
 .auto-btn:hover { color:var(--bronze); }
 .rate-badge.manual { background:var(--burgundy); color:#fff; }
@@ -274,6 +282,8 @@ tfoot td:first-child { text-align:left; }
   .sort-arrow { display:none; }  /* irrelevant in card view */
   .contrib-inp { width:100px; font-size:15px; padding:8px 10px; border:1px solid var(--rule); background:var(--white); }
   .contrib-prefix { font-size:15px; }
+  .payout-inp { width:110px; font-size:20px; padding:6px 8px; border:1px solid var(--rule); background:var(--white); }
+  .payout-prefix { font-size:20px; }
   .auto-btn { font-size:18px; padding:4px 8px; }
   .rate-badge { font-size:12px; padding:3px 9px; }
   /* Summary cards — 2-up grid feels right on phones */
@@ -741,6 +751,8 @@ function updateTip(i,v){
 }
 function setOverride(i,v){ const s=(''+v).trim(); waiters[i].override = (s==='') ? null : Math.max(0, parseFloat(s)||0); render(); }
 function clearOverride(i){ waiters[i].override = null; render(); }
+function setPayoutOverride(i,v){ const s=(''+v).trim(); waiters[i].payoutOverride = (s==='') ? null : Math.max(0, parseFloat(s)||0); render(); }
+function clearPayoutOverride(i){ waiters[i].payoutOverride = null; render(); }
 function addWaiter(){
   waiters.push({name:'', tips:''});
   renderWaiterInputs();
@@ -1077,6 +1089,27 @@ function render(){
       : `Set a rate above 0% to enable.`;
   }
 
+  // ---- Apply per-row Take-Home overrides ---------------------------------
+  // Manager can override any waiter's take-home by editing the Take-Home cell.
+  // The net delta (sum of override − originally-allocated payout) is taken
+  // out of the kitchen tipout. If overrides come in lower than calculated,
+  // the saved amount goes back into the kitchen (symmetric).
+  const originalPayouts = payouts.slice();
+  const isPayoutOverride = waiters.map(w => (w.payoutOverride!=null && !isNaN(w.payoutOverride)));
+  let payoutOverrideDelta = 0;       // positive = pulled from kitchen, negative = returned to kitchen
+  let overrideCount = 0;
+  for(let i=0;i<waiters.length;i++){
+    if(isPayoutOverride[i]){
+      payoutOverrideDelta += (waiters[i].payoutOverride - originalPayouts[i]);
+      payouts[i] = waiters[i].payoutOverride;
+      overrideCount++;
+    }
+  }
+  const kitchenForDisplay = (equalMode ? kitchenEq : kitchen);
+  const kitchenAdjusted = kitchenForDisplay - payoutOverrideDelta;
+  const kitchenWasAdjusted = Math.abs(payoutOverrideDelta) > 0.005;
+  const kitchenWouldGoNegative = kitchenAdjusted < -0.005;
+
   // Table
   const body = document.getElementById('resultBody'); body.innerHTML='';
   // Section 2 display order: sort indices by collected tips (descending). The underlying
@@ -1098,12 +1131,13 @@ function render(){
     const contribCell = equalMode
       ? `<span class="contrib-prefix">−$</span><span style="margin-left:3px;">${Math.round(contribs[i]).toLocaleString()}</span>`
       : `<span class="contrib-wrap"><span class="contrib-prefix">−$</span><input class="contrib-inp" type="number" min="0" step="1" value="${Math.round(contribs[i])}" onchange="setOverride(${i}, this.value)" title="Click to override">${isOverride?`<button class="auto-btn" onclick="clearOverride(${i})" title="Back to auto">↺</button>`:''}</span>`;
+    const payoutCell = `<span class="payout-wrap"><span class="payout-prefix">$</span><input class="payout-inp${isPayoutOverride[i]?' is-override':''}" type="number" min="0" step="1" value="${Math.round(payouts[i])}" onchange="setPayoutOverride(${i}, this.value)" title="Click to adjust take-home (the difference is taken from the kitchen tipout)">${isPayoutOverride[i]?`<button class="auto-btn" onclick="clearPayoutOverride(${i})" title="Back to auto">↺</button>`:''}</span>`;
     tr.innerHTML = `<td data-label="Waiter">${w.name||('Waiter '+(i+1))}</td>
       <td data-label="Collected">${fmt(T(w))}</td>
       <td data-label="Rate">${rateCell}</td>
       <td data-label="Contribution">${contribCell}</td>
       <td data-label="Receives" class="receive">${(receive[i]>0.005)?'+'+fmt(receive[i]).slice(1):'<span class=muted>—</span>'}</td>
-      <td data-label="Take-Home" class="payout">${fmt(payouts[i])}</td>`;
+      <td data-label="Take-Home" class="payout">${payoutCell}</td>`;
     body.appendChild(tr);
   });
   if(openerActiveEq){
@@ -1125,7 +1159,10 @@ function render(){
   // Warnings
   const wb = document.getElementById('warnBanner');
   let warn='';
-  if(equalMode){
+  if(kitchenWouldGoNegative){
+    // Highest-priority warning — the manager's adjustments exceed the kitchen pool.
+    warn = `Take-home adjustments add ${fmt0(payoutOverrideDelta)} above the calculated payouts, but the kitchen tipout was only ${fmt0(kitchenForDisplay)}. The kitchen would be short by ${fmt0(-kitchenAdjusted)}. Reduce the adjustments, or raise the kitchen percentage in Rules & Settings.`;
+  } else if(equalMode){
     // Equal-mode warnings — only when tipouts swallow the entire pool
     if(kitchenEq + managerEq > total + 0.005){
       warn = `Kitchen + manager tipouts of ${fmt0(kitchenEq+managerEq)} exceed the total collected ${fmt0(total)} — there is nothing left to split equally. Reduce the kitchen / manager percentages or check the entered tips.`;
@@ -1150,9 +1187,13 @@ function render(){
   // Summary cards
   const baseLabelEq = '× total collected';
   const baseLabelBr = `× ${fmt0(kitchenBase)} (tips ≥ ${fmt0(lowThresh)})`;
+  const kitchenDisplay = Math.max(0, kitchenAdjusted);  // never show negative
+  const kitchenDeltaNote = kitchenWasAdjusted
+    ? `<div class="delta">${payoutOverrideDelta > 0 ? `−${fmt0(payoutOverrideDelta)} reallocated to waiters` : `+${fmt0(-payoutOverrideDelta)} returned from waiter adjustments`}<br>(was ${fmt0(kitchenForDisplay)})</div>`
+    : '';
   const cards = [
     `<div class="scard"><div class="v">${fmt0(total)}</div><div class="k">Total Collected</div></div>`,
-    `<div class="scard"><div class="v">${fmt0(kitchenEq)}</div><div class="k">Kitchen Tipout</div><div class="basis">${(kitchenPct*100).toFixed(0)}% ${equalMode ? baseLabelEq : baseLabelBr}</div></div>`
+    `<div class="scard"><div class="v">${fmt0(kitchenDisplay)}</div><div class="k">Kitchen Tipout</div><div class="basis">${(kitchenPct*100).toFixed(0)}% ${equalMode ? baseLabelEq : baseLabelBr}</div>${kitchenDeltaNote}</div>`
   ];
   if(managerPct > 0) cards.push(`<div class="scard"><div class="v">${fmt0(managerEq)}</div><div class="k">Manager Tipout</div><div class="basis">${(managerPct*100).toFixed(0)}% ${equalMode ? baseLabelEq : baseLabelBr}</div></div>`);
   if(openerActiveEq) cards.push(`<div class="scard"><div class="v">${fmt0(openerShareEq)}</div><div class="k">Opener Share</div><div class="basis">${(openerPct*100).toFixed(0)}% × ${fmt0(avgTakeHomeEq)} avg server take-home</div></div>`);
