@@ -879,9 +879,9 @@ function submitToSheet(){
     document.getElementById('settingsCaret').textContent = '▾';
     return;
   }
-  if(!lastSnapshot || lastSnapshot.waiters.length===0 || lastSnapshot.totalCollected<=0){
+  if(!lastSnapshot || lastSnapshot.waiters.length===0){
     status.className = 'submit-status err';
-    status.textContent = 'Nothing to submit yet — enter at least one waiter with tips.';
+    status.textContent = 'Nothing to submit yet — add at least one waiter (a $0-tip event is fine, but you need a roster on record).';
     return;
   }
   status.className = 'submit-status pending';
