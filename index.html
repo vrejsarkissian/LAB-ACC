@@ -513,6 +513,28 @@ const VENUE_WAITER_COUNTS = {
   'Offsite Catering': 8
 };
 
+// Default roster per venue, formatted as on the source spreadsheet
+// ("Lastname, Firstname" — payroll convention). Picking a venue pre-fills the
+// waiter list with these names. Managers can still + Add waiter for extras and
+// × Remove for staff not working tonight. Venues without a roster (e.g. Offsite)
+// fall through to the blank-row behavior using VENUE_WAITER_COUNTS.
+const VENUE_ROSTERS = {
+  'Glenoaks Ballroom': [
+    'Boghozian, Aryan', 'Ghookasian, Arin', 'Isakhanyan, Emil', 'Israelian, Arman',
+    'Israelian, Petros', 'Khachatryan, Gevork', 'Khachikyan, Aleks', 'Melkonian, Avo',
+    'Mkrtchyan, Haik', 'Tsaturian, Alen', 'Tumanyan, Vahe', 'Vardanyan, Alen'
+  ],
+  'The Landmark': [
+    'Abrahamyan, Samvel', 'Asatrian, Aleks', 'Babayan, Arsen', 'Babichenko, Iryna',
+    'Bakhshinyan, Narek', 'Berrio, Mateo', 'Enciu, Nicolai', 'Hambardzumyan, Avetik',
+    'Harutyunyan, Zaven', 'Kovpak, Elina', 'Minasyan, Grant', 'Mitrofanova, Kristina',
+    'Mkhitaryan, Gayane', 'Monge, Nelson', 'Mukhina, Katie', 'Nazaretian, Mikael',
+    'Sodolynska, Halynas', 'Tarverdian, Tigran', 'Tokuda, Amina', 'Veneroso, Tiffany',
+    'Veselova, Aryna'
+  ]
+  // Offsite Catering — no roster supplied yet; falls back to 8 blank rows.
+};
+
 // Start with no waiters — they'll populate when a venue is selected.
 let waiters = [];
 
@@ -596,8 +618,10 @@ function onVenueChange(){
   // If switching to a different venue and the operator has already entered real data,
   // confirm before wiping the current roster.
   if(changed && newVenue && hasWaiterData()){
-    const cnt = VENUE_WAITER_COUNTS[newVenue] || 0;
-    if(!confirm('Switching to ' + newVenue + ' will replace the current waiter list with ' + cnt + ' blank rows. Continue?')){
+    const roster = VENUE_ROSTERS[newVenue];
+    const cnt = roster ? roster.length : (VENUE_WAITER_COUNTS[newVenue] || 0);
+    const what = roster ? newVenue + "'s default roster (" + cnt + ' staff)' : cnt + ' blank rows';
+    if(!confirm('Switching to ' + newVenue + ' will replace the current waiter list with ' + what + '. Continue?')){
       // Revert the venue field — the user backed out
       document.getElementById('venue').value = previousVenue;
       return;
@@ -613,13 +637,34 @@ function onVenueChange(){
   }
 }
 function loadDefaultRosterForVenue(venue){
-  const count = VENUE_WAITER_COUNTS[venue] || 0;
-  waiters = Array.from({length: count}, () => ({name:'', tips:''}));
+  const roster = VENUE_ROSTERS[venue];
+  if(roster && roster.length){
+    waiters = roster.map(name => ({name: name, tips: ''}));
+  } else {
+    const count = VENUE_WAITER_COUNTS[venue] || 0;
+    waiters = Array.from({length: count}, () => ({name:'', tips:''}));
+  }
   renderWaiterInputs();
   render();
 }
 function hasWaiterData(){
-  return waiters.some(w => (w.name && String(w.name).trim()) || (Number(w.tips) > 0));
+  // Any tip entered counts as real data — always warn before wiping.
+  if(waiters.some(w => Number(w.tips) > 0)) return true;
+  // If the names exactly match the current venue's default roster (no edits,
+  // no additions, no removals), treat the list as "untouched" — the manager
+  // is just exploring venues and we shouldn't pester them with a confirm.
+  const roster = VENUE_ROSTERS[currentVenue];
+  if(roster && waiters.length === roster.length
+      && waiters.every((w,i) => (w.name||'') === roster[i])){
+    return false;
+  }
+  // If the venue has no default roster (e.g. Offsite — blank rows by default)
+  // and every row is still blank, also treat as untouched.
+  if(!roster && waiters.every(w => !w.name || !String(w.name).trim())){
+    return false;
+  }
+  // Otherwise the operator has typed at least one custom name — confirm before wiping.
+  return waiters.some(w => w.name && String(w.name).trim());
 }
 function onEventDateChange(){
   clearSubmitStatus();
