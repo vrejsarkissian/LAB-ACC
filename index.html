@@ -466,11 +466,11 @@ tfoot td:first-child { text-align:left; }
         <div id="managerCalcHint" style="font-size:12px;color:var(--ink-soft);margin-top:6px;font-style:italic;"></div>
       </div>
       <div class="set-group">
-        <div class="set-label">Venue Opener (service staff who set up but collect no tips — paid a server share from the pool)</div>
-        <div class="kitchen-set" style="flex-wrap:wrap;">
-          <input type="text" id="openerName" placeholder="Opener name" oninput="render()" style="min-width:160px;flex:0 0 auto;">
-          <input type="number" id="openerPct" value="0" min="0" oninput="render()" style="max-width:90px;"><span class="pct" style="color:var(--ink);font-weight:600;">%</span>
-          <span style="color:var(--ink-soft);font-size:12px;font-style:italic;">share of the average server take-home (50 = half share) · paid from the pool · leave at 0 to disable</span>
+        <div class="set-label">Venue Openers (service staff who set up but collect no tips — paid a server share from the pool)</div>
+        <div id="openersList"></div>
+        <button class="btn" onclick="addOpener()" style="margin-top:6px;font-size:12px;padding:7px 14px;">+ Add opener</button>
+        <div style="margin-top:8px;color:var(--ink-soft);font-size:12px;font-style:italic;line-height:1.55;">
+          Each opener gets their % of the average server take-home, paid from the leftover pool. Add multiple openers if more than one helper set up. If the pool can't fully cover everyone's requested share, each opener is reduced proportionally.
         </div>
       </div>
       <div class="set-group">
@@ -537,6 +537,10 @@ const VENUE_ROSTERS = {
 
 // Start with no waiters — they'll populate when a venue is selected.
 let waiters = [];
+// Openers — service staff who set up but collected no tips. Each is paid a
+// percentage of the average server take-home from the leftover pool.
+// Stored as session state (resets on reload), parallel to the existing model.
+let openers = [];   // [{name:'Avetis', pct:50}, ...]
 
 // ---- Per-venue rule sets ----
 // Glenoaks is set from the spreadsheet. Landmark & Offsite start as copies — edit to each venue's real rules.
@@ -798,6 +802,28 @@ function setOverride(i,v){ const s=(''+v).trim(); waiters[i].override = (s==='')
 function clearOverride(i){ waiters[i].override = null; render(); }
 function setPayoutOverride(i,v){ const s=(''+v).trim(); waiters[i].payoutOverride = (s==='') ? null : Math.max(0, parseFloat(s)||0); render(); }
 function clearPayoutOverride(i){ waiters[i].payoutOverride = null; render(); }
+
+// ---- Openers (multi) ----
+function addOpener(){ openers.push({name:'', pct:50}); renderOpenersList(); render(); }
+function removeOpener(i){ openers.splice(i,1); renderOpenersList(); render(); }
+function updateOpenerName(i,v){ openers[i].name = v; render(); }
+function updateOpenerPct(i,v){ openers[i].pct = Math.max(0, parseFloat(v)||0); render(); }
+function renderOpenersList(){
+  const root = document.getElementById('openersList');
+  if(!root) return;
+  if(openers.length === 0){
+    root.innerHTML = '<div style="font-size:12.5px;color:var(--ink-soft);font-style:italic;padding:4px 0;">No openers yet — click + Add opener to include one.</div>';
+    return;
+  }
+  root.innerHTML = openers.map((o,i)=>`
+    <div class="opener-row-set" style="display:flex;gap:8px;align-items:center;margin-bottom:7px;flex-wrap:wrap;">
+      <input type="text" placeholder="Opener name" value="${(o.name||'').replace(/"/g,'&quot;')}" oninput="updateOpenerName(${i}, this.value)" style="flex:1 1 160px;min-width:0;">
+      <input type="number" min="0" value="${o.pct}" oninput="updateOpenerPct(${i}, this.value)" style="width:75px;flex:0 0 75px;">
+      <span class="pct" style="color:var(--ink);font-weight:600;">%</span>
+      <button class="rm" onclick="removeOpener(${i})" title="Remove opener" style="background:transparent;border:0;color:var(--ink-soft);cursor:pointer;font-size:18px;padding:4px 8px;">×</button>
+    </div>
+  `).join('');
+}
 function addWaiter(){
   waiters.push({name:'', tips:''});
   renderWaiterInputs();
@@ -885,7 +911,7 @@ function downloadConfiguredHtml(){
     const el = clone.querySelector('#'+id); if(el) el.innerHTML = '';
   });
   // Clear per-event input values so the fresh copy isn't pre-populated with today's data
-  ['eventType','ethnicity','openerName','eventNotes'].forEach(id => {
+  ['eventType','ethnicity','eventNotes'].forEach(id => {
     const el = clone.querySelector('#'+id); if(el){ el.removeAttribute('value'); el.value=''; if(el.tagName==='TEXTAREA') el.textContent=''; }
   });
   // Replace the DEFAULT_SUBMIT_URL constant in the inline script
@@ -1068,26 +1094,41 @@ function render(){
 
   const payouts = waiters.map((w,i)=> T(w) - contribs[i] + receive[i]);
 
-  // ---- Venue Opener ----------------------------------------------------------
-  // The opener is service staff who set up the venue and collect NO tips of their
-  // own. They are paid a fractional "server share" — openerPct of the AVERAGE
-  // take-home of the actual servers — funded FROM the pool (so it reduces the
-  // low-earner leveling, never the contributions of the higher earners). The
-  // share is sized off the baseline distribution above, then pulled out and the
-  // low-earner leveling is recomputed on the smaller remaining pool.
-  const openerPct = (+(document.getElementById('openerPct') ? document.getElementById('openerPct').value : 0) || 0) / 100;
-  const openerName = ((document.getElementById('openerName') && document.getElementById('openerName').value) || '').trim() || 'Opener';
-  let openerShare = 0, openerWanted = 0, openerCapped = false, openerActive = false, avgTakeHome = 0;
-  if(openerPct > 0 && waiters.length > 0){
-    openerActive = true;
+  // ---- Venue Openers (multi) -------------------------------------------------
+  // Each opener is service staff who set up the venue and collected NO tips of
+  // their own. Each is paid `pct` of the AVERAGE server take-home, funded FROM
+  // the pool (so it reduces the low-earner leveling, never the higher earners'
+  // contributions). If the sum of all openers' requested shares exceeds the
+  // pool, each opener is reduced PROPORTIONALLY (same fraction of want), so
+  // the burden of the shortfall is shared fairly across all openers.
+  const activeOpeners = openers
+    .filter(o => o.pct > 0)
+    .map(o => ({
+      name: (o.name || '').trim() || 'Opener',
+      pct: o.pct / 100,    // 50 → 0.5
+      wanted: 0, share: 0, capped: false
+    }));
+  let avgTakeHome = 0;
+  let totalOpenerShare = 0;
+  let totalOpenerWanted = 0;
+  if(activeOpeners.length > 0 && waiters.length > 0){
     avgTakeHome = payouts.reduce((a,b)=>a+b,0) / payouts.length;
-    openerWanted = openerPct * avgTakeHome;                       // e.g. 50% of the average server's take-home
-    openerShare = Math.min(openerWanted, Math.max(0, leftover));  // funded from the pool only
-    if(openerShare < openerWanted - 0.005) openerCapped = true;
-    const finalLeftover = Math.max(0, leftover) - openerShare;
+    for(const o of activeOpeners){ o.wanted = o.pct * avgTakeHome; }
+    totalOpenerWanted = activeOpeners.reduce((s,o)=> s + o.wanted, 0);
+    const poolAvailable = Math.max(0, leftover);
+    if(totalOpenerWanted <= poolAvailable + 0.005){
+      for(const o of activeOpeners){ o.share = o.wanted; }
+    } else {
+      const scale = poolAvailable > 0 ? poolAvailable / totalOpenerWanted : 0;
+      for(const o of activeOpeners){ o.share = o.wanted * scale; o.capped = true; }
+    }
+    totalOpenerShare = activeOpeners.reduce((s,o)=> s + o.share, 0);
+    // Re-level the low earners on the pool that remains after paying openers
+    const finalLeftover = Math.max(0, leftover) - totalOpenerShare;
     const reLevel = waterfill(finalLeftover, lowIdx, i => T(waiters[i]) - contribs[i]);
     for(let i=0;i<waiters.length;i++){ receive[i] = reLevel[i] || 0; payouts[i] = T(waiters[i]) - contribs[i] + receive[i]; }
   }
+  const openerCappedAny = activeOpeners.some(o => o.capped);
   const toLow = receive.reduce((a,b)=>a+b,0);
 
   // ---- Equal Distribution Mode ----------------------------------------------
@@ -1097,7 +1138,7 @@ function render(){
   // water-fill machinery don't apply.
   const equalMode = !!(document.getElementById('equalMode') && document.getElementById('equalMode').checked);
   let kitchenBaseEq = kitchenBase, kitchenEq = kitchen, managerEq = manager;
-  let openerShareEq = openerShare, openerActiveEq = openerActive, openerWantedEq = openerWanted, openerCappedEq = openerCapped, avgTakeHomeEq = avgTakeHome;
+  let avgTakeHomeEq = avgTakeHome;
   let leftoverEq = leftover, toLowEq = toLow;
   let isLowEq = isLow.slice(), numLowEq = numLow;
   let equalShare = 0;
@@ -1108,14 +1149,21 @@ function render(){
     managerEq = kitchenBaseEq * managerPct;
     const poolBeforeOpener = Math.max(0, total - kitchenEq - managerEq);
     const equalShareBefore = N > 0 ? poolBeforeOpener / N : 0;
-    openerActiveEq = false; openerShareEq = 0; openerWantedEq = 0; openerCappedEq = false; avgTakeHomeEq = equalShareBefore;
-    if(openerPct > 0 && N > 0){
-      openerActiveEq = true;
-      openerWantedEq = openerPct * equalShareBefore;
-      openerShareEq = Math.min(openerWantedEq, poolBeforeOpener);
-      if(openerShareEq < openerWantedEq - 0.005) openerCappedEq = true;
+    avgTakeHomeEq = equalShareBefore;
+    // Recompute opener shares against the equal-mode pool / average
+    totalOpenerShare = 0; totalOpenerWanted = 0;
+    if(activeOpeners.length > 0 && N > 0){
+      for(const o of activeOpeners){ o.wanted = o.pct * equalShareBefore; o.share = 0; o.capped = false; }
+      totalOpenerWanted = activeOpeners.reduce((s,o)=> s + o.wanted, 0);
+      if(totalOpenerWanted <= poolBeforeOpener + 0.005){
+        for(const o of activeOpeners){ o.share = o.wanted; }
+      } else {
+        const scale = poolBeforeOpener > 0 ? poolBeforeOpener / totalOpenerWanted : 0;
+        for(const o of activeOpeners){ o.share = o.wanted * scale; o.capped = true; }
+      }
+      totalOpenerShare = activeOpeners.reduce((s,o)=> s + o.share, 0);
     }
-    equalShare = N > 0 ? (poolBeforeOpener - openerShareEq) / N : 0;
+    equalShare = N > 0 ? (poolBeforeOpener - totalOpenerShare) / N : 0;
     // Overwrite per-waiter arrays for downstream display
     for(let i=0;i<N;i++){
       contribs[i] = T(waiters[i]);     // everyone contributes their full collected
@@ -1185,21 +1233,23 @@ function render(){
       <td data-label="Take-Home" class="payout">${payoutCell}</td>`;
     body.appendChild(tr);
   });
-  if(openerActiveEq){
-    const tr = document.createElement('tr');
-    tr.className = 'opener-row';
-    tr.innerHTML = `<td data-label="Waiter">${openerName}</td>
-      <td data-label="Collected">${fmt(0)}</td>
-      <td data-label="Rate"><span class="rate-badge opener" title="Opener share: ${(openerPct*100).toFixed(0)}% of the average server take-home, paid from the pool">opener</span></td>
-      <td data-label="Contribution"><span class="muted">—</span></td>
-      <td data-label="Receives" class="receive">${openerShareEq>0.005?'+'+fmt(openerShareEq).slice(1):'<span class=muted>—</span>'}</td>
-      <td data-label="Take-Home" class="payout">${fmt(openerShareEq)}</td>`;
-    body.appendChild(tr);
+  if(activeOpeners.length > 0){
+    activeOpeners.forEach(o => {
+      const tr = document.createElement('tr');
+      tr.className = 'opener-row';
+      tr.innerHTML = `<td data-label="Waiter">${o.name}</td>
+        <td data-label="Collected">${fmt(0)}</td>
+        <td data-label="Rate"><span class="rate-badge opener" title="Opener share: ${(o.pct*100).toFixed(0)}% of the average server take-home, paid from the pool">opener</span></td>
+        <td data-label="Contribution"><span class="muted">—</span></td>
+        <td data-label="Receives" class="receive">${o.share>0.005?'+'+fmt(o.share).slice(1):'<span class=muted>—</span>'}</td>
+        <td data-label="Take-Home" class="payout">${fmt(o.share)}</td>`;
+      body.appendChild(tr);
+    });
   }
-  const totalPayout = payouts.reduce((a,b)=>a+b,0) + openerShareEq;
+  const totalPayout = payouts.reduce((a,b)=>a+b,0) + totalOpenerShare;
   const totalContribDisp = contribs.reduce((a,b)=>a+b,0);  // recomputed after any equal-mode overwrite
   document.getElementById('resultFoot').innerHTML =
-    `<tr><td data-label="">Totals</td><td data-label="Total Collected">${fmt(total)}</td><td data-label=""></td><td data-label="Total Contribution" class="contrib">−${fmt(totalContribDisp).slice(1)}</td><td data-label="Total Receives" class="receive">+${fmt(toLowEq+openerShareEq).slice(1)}</td><td data-label="Total Payout">${fmt(totalPayout)}</td></tr>`;
+    `<tr><td data-label="">Totals</td><td data-label="Total Collected">${fmt(total)}</td><td data-label=""></td><td data-label="Total Contribution" class="contrib">−${fmt(totalContribDisp).slice(1)}</td><td data-label="Total Receives" class="receive">+${fmt(toLowEq+totalOpenerShare).slice(1)}</td><td data-label="Total Payout">${fmt(totalPayout)}</td></tr>`;
 
   // Warnings
   const wb = document.getElementById('warnBanner');
@@ -1211,8 +1261,9 @@ function render(){
     // Equal-mode warnings — only when tipouts swallow the entire pool
     if(kitchenEq + managerEq > total + 0.005){
       warn = `Kitchen + manager tipouts of ${fmt0(kitchenEq+managerEq)} exceed the total collected ${fmt0(total)} — there is nothing left to split equally. Reduce the kitchen / manager percentages or check the entered tips.`;
-    } else if(openerCappedEq){
-      warn = `${openerName}'s opener share was reduced from ${fmt0(openerWantedEq)} to ${fmt0(openerShareEq)} — the equal-pool share isn't large enough to fully cover the requested opener percentage. To restore it, lower the opener % or check the total collected.`;
+    } else if(openerCappedAny){
+      const namesList = activeOpeners.filter(o=>o.capped).map(o=>o.name).join(', ');
+      warn = `Opener share${activeOpeners.filter(o=>o.capped).length>1?'s for':' for'} ${namesList} ${activeOpeners.filter(o=>o.capped).length>1?'were':'was'} reduced — the equal-mode pool isn't large enough to fully cover ${activeOpeners.length>1?'all openers':'the opener'}. Wanted ${fmt0(totalOpenerWanted)}, paid ${fmt0(totalOpenerShare)}. Each opener got a proportional share of what was available. To restore, lower the opener %${activeOpeners.length>1?'s':''} or check the total collected.`;
     }
   } else {
     if(leftover < -0.005){
@@ -1222,8 +1273,9 @@ function render(){
       warn = `Contributions total only ${fmt0(totalContrib)} — short of the ${tipoutLabel} by ${fmt0(-leftover)}. The pool can't cover the tipouts, so they would be underfunded and there's nothing to redistribute. (Happens when most waiters are below the contribution threshold.)`;
     } else if(numLow===0 && leftover>0.005){
       warn = `No waiter collected under ${fmt0(lowThresh)}, so the ${fmt0(leftover)} left after the kitchen tipout has no recipients under the current rule. Decide where it goes — roll to next event, add to kitchen, or split among all.`;
-    } else if(openerCapped){
-      warn = `The pool only had ${fmt0(Math.max(0,leftover))} left after tipouts, so ${openerName}'s opener share was reduced from ${fmt0(openerWanted)} to ${fmt0(openerShare)} — and there's nothing left to level up the low earners. The half-share is larger than the pool can cover on a night this size.`;
+    } else if(openerCappedAny){
+      const namesList = activeOpeners.filter(o=>o.capped).map(o=>o.name).join(', ');
+      warn = `The pool only had ${fmt0(Math.max(0,leftover))} left after tipouts, so opener share${activeOpeners.filter(o=>o.capped).length>1?'s for':' for'} ${namesList} ${activeOpeners.filter(o=>o.capped).length>1?'were':'was'} reduced — wanted ${fmt0(totalOpenerWanted)}, paid ${fmt0(totalOpenerShare)} (pro-rated). There's nothing left to level up the low earners.`;
     }
   }
   if(warn){ wb.textContent = warn; wb.classList.add('show'); }
@@ -1241,7 +1293,7 @@ function render(){
     `<div class="scard"><div class="v">${fmt0(kitchenDisplay)}</div><div class="k">Kitchen Tipout</div><div class="basis">${(kitchenPct*100).toFixed(0)}% ${equalMode ? baseLabelEq : baseLabelBr}</div>${kitchenDeltaNote}</div>`
   ];
   if(managerPct > 0) cards.push(`<div class="scard"><div class="v">${fmt0(managerEq)}</div><div class="k">Manager Tipout</div><div class="basis">${(managerPct*100).toFixed(0)}% ${equalMode ? baseLabelEq : baseLabelBr}</div></div>`);
-  if(openerActiveEq) cards.push(`<div class="scard"><div class="v">${fmt0(openerShareEq)}</div><div class="k">Opener Share</div><div class="basis">${(openerPct*100).toFixed(0)}% × ${fmt0(avgTakeHomeEq)} avg server take-home</div></div>`);
+  if(activeOpeners.length > 0) cards.push(`<div class="scard"><div class="v">${fmt0(totalOpenerShare)}</div><div class="k">Opener${activeOpeners.length>1?'s':''} Share</div><div class="basis">${activeOpeners.length} opener${activeOpeners.length>1?'s':''} · ${activeOpeners.map(o=>`${(o.pct*100).toFixed(0)}%`).join(' + ')} of ${fmt0(avgTakeHomeEq)} avg take-home${openerCappedAny?' · pro-rated':''}</div></div>`);
   if(equalMode){
     cards.push(`<div class="scard"><div class="v">${fmt0(equalShare)}</div><div class="k">Per Waiter</div><div class="basis">equal share of remaining pool</div></div>`);
     cards.push(`<div class="scard"><div class="v">${waiters.length}</div><div class="k">Waiters Sharing</div></div>`);
@@ -1255,8 +1307,8 @@ function render(){
 
   // Sub
   document.getElementById('resultSub').textContent = equalMode
-    ? `${waiters.length} waiters · ${fmt0(total)} collected · equal distribution · kitchen ${(kitchenPct*100).toFixed(0)}%${managerPct>0?` · manager ${(managerPct*100).toFixed(0)}%`:''}${openerActiveEq?` · opener ${openerName} ${fmt0(openerShareEq)}`:''} · ${fmt0(equalShare)} per waiter.`
-    : `${waiters.length} waiters · ${fmt0(total)} collected · kitchen ${(kitchenPct*100).toFixed(0)}% of tips ≥ ${fmt0(lowThresh)}${managerPct>0?` · manager ${(managerPct*100).toFixed(0)}% of tips ≥ ${fmt0(lowThresh)}`:''}${openerActive?` · opener ${openerName} ${fmt0(openerShare)} (${(openerPct*100).toFixed(0)}% server share)`:''} · ${fmt0(Math.max(0,toLow))} leveling up ${numLow} earner${numLow===1?'':'s'} under ${fmt0(lowThresh)} (lowest first).`;
+    ? `${waiters.length} waiters · ${fmt0(total)} collected · equal distribution · kitchen ${(kitchenPct*100).toFixed(0)}%${managerPct>0?` · manager ${(managerPct*100).toFixed(0)}%`:''}${activeOpeners.length>0?` · ${activeOpeners.length} opener${activeOpeners.length>1?'s':''} ${fmt0(totalOpenerShare)}`:''} · ${fmt0(equalShare)} per waiter.`
+    : `${waiters.length} waiters · ${fmt0(total)} collected · kitchen ${(kitchenPct*100).toFixed(0)}% of tips ≥ ${fmt0(lowThresh)}${managerPct>0?` · manager ${(managerPct*100).toFixed(0)}% of tips ≥ ${fmt0(lowThresh)}`:''}${activeOpeners.length>0?` · ${activeOpeners.length} opener${activeOpeners.length>1?'s':''} ${fmt0(totalOpenerShare)}`:''} · ${fmt0(Math.max(0,toLow))} leveling up ${numLow} earner${numLow===1?'':'s'} under ${fmt0(lowThresh)} (lowest first).`;
 
   // Snapshot for submission
   const dateDisp = (function(){ const dv=document.getElementById('eventDate').value; if(!dv) return ''; const d=new Date(dv+'T00:00:00'); return d.toLocaleDateString(undefined,{weekday:'long',year:'numeric',month:'long',day:'numeric'}); })();
@@ -1269,7 +1321,11 @@ function render(){
     totalCollected: Math.round(total*100)/100,
     kitchen: Math.round(kitchen*100)/100,
     manager: Math.round(manager*100)/100,
-    opener: openerActive ? { name: openerName, pct: Math.round(openerPct*1000)/10+'%', share: Math.round(openerShare*100)/100 } : null,
+    opener: activeOpeners.length > 0 ? {
+      count: activeOpeners.length,
+      totalShare: Math.round(totalOpenerShare*100)/100,
+      list: activeOpeners.map(o => ({ name: o.name, pct: Math.round(o.pct*1000)/10+'%', share: Math.round(o.share*100)/100, capped: o.capped }))
+    } : null,
     toLowEarners: Math.round(Math.max(0,toLow)*100)/100,
     numLow: numLow,
     totalPayout: Math.round(totalPayout*100)/100,
@@ -1290,6 +1346,7 @@ loadStore();
 loadSubmitUrl();
 currentVenue = document.getElementById('venue').value;
 loadVenueRules(currentVenue);
+renderOpenersList();
 render();
 </script>
 </body>
